@@ -1,0 +1,419 @@
+# AI Software Factory Standard — Canonical Vocabulary
+# Normative. Single source of truth for every enumerated term used by the
+# Standard and by every profile. Documents reference this file; they do not
+# redefine its terms. This file, in the Standard repository, is the canonical
+# source; the machine-readable copy in the policy repo is generated from it or
+# verified against it by CI (Standard §17.4 item 13), and registry CI rejects
+# any document or config that uses an unknown term.
+
+apiVersion: aisf/4.0
+kind: Vocabulary
+metadata:
+  standard: AI Software Factory Standard
+  version: 4.0.0
+  date: 2026-11-23
+  owner: factory-standard-owner
+
+# ---------------------------------------------------------------------------
+# Governance (Standard §9)
+# ---------------------------------------------------------------------------
+riskTier:                       # Standard §9.6
+  values: [Low, Medium, High]
+  rules:
+    - The change sets the tier, not the author (P19).
+    - Tier = max of all risk signals; a classifier may raise, never lower, a protected category.
+    - Unknown risk = High.
+    - Profiles MAY define sub-tiers; each sub-tier maps to exactly one canonical tier.
+
+reversibility:                  # Standard §9.5
+  values: [HIGH, MEDIUM, LOW]
+  rules:
+    - LOW applies the controls of the next-higher tier.
+    - Unknown reversibility = LOW.
+
+trustLevel:                     # Standard §9.4 — per (task class, agent configuration)
+  values:
+    T0: { meaning: "default, no qualifying evidence", allowedAutonomy: implement-and-request-review }
+    T1: { meaning: qualified in shadow/assisted mode, allowedAutonomy: verify-and-open-pr }
+    T2: { meaning: qualified by a supervised production record, allowedAutonomy: merge-on-eligible-path }
+  evaluationComponents: [representativeness, critical-scenarios, holdout, regression, confidence]   # §9.4
+  policyOverride:
+    propose-only: imposed by policy for protected categories regardless of trust level
+  rules:
+    - Trust only lightens within a tier, never across tiers.
+    - No trust evidence = T0.
+    - Trust is held per explicitly defined task class (ACTIVE workflow id@major, scope, risk ceiling); it never transfers across classes.
+    - Promotion uses a confidence bound on the failure rate, not a point estimate.
+    - Default T2 bound (suggested) - upper 95% bound of the failure rate <= 6%.
+    - The generic workflow task class never exceeds T0.
+
+trustStatus:                    # Standard §9.4, §9.9 — status of a trust profile, separate from its level
+  values: [CURRENT, RE-EVALUATION_REQUIRED]
+
+allowedAutonomy:                # Standard §9.4 — ordered from least to most autonomy
+  values: [propose-only, implement-and-request-review, verify-and-open-pr, merge-on-eligible-path]
+
+protectedCategory:              # Standard §9.5 rule 5, §9.6 — classifier may raise above the floor, never below
+  values:
+    auth-and-secrets:        { floor: High }
+    billing-and-payments:    { floor: High }
+    legal-and-privacy:       { floor: High }
+    destructive-or-regulated-data: { floor: High }
+    public-api-breaking:     { floor: High }
+    public-api-additive:     { floor: Medium }
+    ci-release-and-branch-protection: { floor: Medium, loosening: High }   # CI/CD workflow files, merge queue, branch protection; same direction rules as control-file (§7.13)
+    production-operations:   { floor: High }      # includes production release execution and data-plane operations
+    control-file:            { floor: Medium, loosening: High }
+
+eligibility:                    # Standard §9.5 rule 3
+  ownershipTrust: requester belongs to the owning team of every affected area
+  executionTrust: trust level T2 for the task class
+  eligible: ownershipTrust AND executionTrust
+
+autonomyLevel:                  # Standard §9.5 — shorthand for approval-slot sets of §9.10
+  values:
+    A0: zero human approvals; only Low tier, eligible, all zero-human conditions met
+    A1: one approval slot; the requester sign-off fills it only if tier is Low and requester owns every affected area, otherwise an independent code owner of each affected area
+    A2: one independent approval (requester sign-off required, not counted); code owner where the area is owner-listed sensitive or the profile requires it
+    A3: approved plan before implementation + two independent approvals, at least one a code owner of each affected area
+  lightestPermitted:            # profiles MAY require more human involvement, never less
+    - { tier: Low,    reversibility: [HIGH, MEDIUM], eligible: true,  level: A0 }
+    - { tier: Low,    reversibility: [HIGH, MEDIUM], eligible: false, level: A1 }
+    - { tier: Low,    reversibility: [LOW],          eligible: any,   level: A2 }
+    - { tier: Medium, reversibility: [HIGH, MEDIUM], eligible: any,   level: A2 }
+    - { tier: Medium, reversibility: [LOW],          eligible: any,   level: A3 }
+    - { tier: High,   reversibility: any,            eligible: any,   level: A3 }
+  additiveSlots: [control-file-owner, security-owner, business-owner, domain-owner]   # union on top of the level (§9.10); domain-owner is scoped by a profile (e.g. design-system owner)
+
+approvalSlotKind:               # Standard §6.12, §9.10, Appendix K
+  values: [requester-signoff, independent, code-owner, control-file-owner, security-owner, business-owner, plan-approval,
+           product-owner, architect, service-owner, incident-commander, domain-owner]
+
+requesterSource:                # Standard §9.10 — recorded by the task runner, never by the agent
+  values: [ci-dispatch, issue-command, cli-login, automation-owner, unknown]
+  rules:
+    - unknown means worst case; independent approval is required.
+    - Requester sign-off fills the A1 slot only at tier Low, when the requester owns every affected area, no circuit breaker is tripped and no blocking integrity sensor hit exists.
+
+# ---------------------------------------------------------------------------
+# Verification and evidence (Standard §7, §8)
+# ---------------------------------------------------------------------------
+checkStatus:                    # Standard §7.5
+  values:
+    PASS: check ran and met its criteria
+    FAIL: check ran and did not meet its criteria
+    ERROR: infrastructure or tool failure; says nothing about the change; never passing; consumes no loop budget
+    NOT_ASSESSED: check did not run or cannot observe the required evidence layer
+  rules:
+    - NOT_ASSESSED never becomes PASS.
+    - Profiles MUST NOT add statuses.
+
+dispositionType:                # Standard §7.5 — attached to a non-PASS result
+  values:
+    not-applicable:     { appliesTo: [NOT_ASSESSED], decidedBy: policy, passing: true }
+    assessed-elsewhere: { appliesTo: [NOT_ASSESSED], decidedBy: policy, passing: true, conditions: [attested provider run, verified version equals deployed version, within freshness window] }
+    baselined:          { appliesTo: [FAIL], decidedBy: policy, passing: true, conditions: [every finding matches a CI-snapshotted baseline entry] }
+    waived:             { appliesTo: [FAIL, NOT_ASSESSED], decidedBy: human, passing: true, conditions: [owner, reason, scope, expiry, approver per §9.10] }
+    deferred:           { appliesTo: [NOT_ASSESSED], decidedBy: human, passing: true, conditions: [named later gate where it MUST be assessed] }
+  rules:
+    - A required check is satisfied only by PASS or by a non-PASS status with a valid passing disposition.
+    - A stale baseline entry (finding no longer occurs) blocks until a trusted mechanism removes it.
+    - Profiles MUST NOT add passing dispositions.
+
+gate:                           # where a required check blocks
+  values: [merge, publish, post-release]
+
+checkLifecycle:                 # Standard §8.7
+  values: [planned, shadow, active, deprecated]
+
+enforcement:                    # Standard §7.5, §8.2
+  values: [observe, warn, blocking]
+  fromCheck:
+    - { lifecycle: shadow, requirement: any,      enforcement: observe }
+    - { lifecycle: active, requirement: advisory, enforcement: warn }
+    - { lifecycle: active, requirement: required, enforcement: blocking }
+
+checkSeverity:                  # severity of a check result, derived from enforcement
+  values: { BLOCKER: blocking, WARNING: warn, INFO: observe }
+  note: Finding severities inside a check (e.g. axe critical/serious) are profile-defined and decide only whether the check FAILs.
+
+ruleLifecycle:                  # Standard §8.3
+  values: [PROPOSED, DRAFT_WITH_FIXTURES, OBSERVE, WARN, BLOCKING, MONITOR, REVISE, DEPRECATE, RETIRE]
+  toEnforcement: { OBSERVE: observe, WARN: warn, BLOCKING: blocking }
+
+checkOwnership:
+  values: [local, cross-team-contract]
+
+checkRequirement:               # Standard §8.7 — per profile
+  values: [required, advisory]
+checkBasisClass:                # Standard §8.7
+  values: [standard, contract, security, privacy, legal, policy, record]
+  rules:
+    - autoDemote MUST be false for core checks (integrity.*, knowledge.impact, separation of duties) and for security, privacy, legal, contract.
+    - autoDemote only opens a demotion proposal; demotion is a loosening change (§7.13).
+
+dependencyPolicyStatus:         # Standard §11.4
+  values: [APPROVED, CONDITIONAL, DEPRECATED, PROHIBITED]
+
+vulnerabilitySeverity:          # Standard §11.7 — remediation SLA counted from disclosure or detection, whichever is later
+  values:
+    critical: { suggestedRemediationDays: 7 }
+    high:     { suggestedRemediationDays: 30 }
+    medium:   { suggestedRemediationDays: 90 }
+    low:      { suggestedRemediationDays: null }   # fixed at the next planned upgrade
+  rules:
+    - Profiles MAY shorten, never lengthen, the remediation SLA.
+    - An open finding past its SLA without a valid waiver blocks new dependency additions in the scope and is escalated to the owner.
+
+licensePolicy:                  # Standard §11.8 — central allow/deny list
+  values: [allow, deny, review]
+  rules:
+    - The list is owned centrally; a profile MAY move an entry towards deny, never towards allow.
+    - A license absent from the list is review.
+
+reviewerResponse:               # Standard §7.12 — author response to a reviewer finding
+  values: [fixed, wrong, intentional, didnt-matter]
+
+profileLayer:                   # Standard §7.3 — from most general to most specific
+  values: [core, domain, organization, repository, surface, task-class, risk, task]
+  rules:
+    - Layers merge by the stricter-wins rules of §7.3; no layer loosens another.
+profileConflictResolution:      # Standard §7.3
+  values: [stricter, union, decision, rejected]
+  rules:
+    - An incomparable conflict fails resolution (task BLOCKED) until a recorded decision; never resolved silently.
+
+verificationExecutor:           # Standard §7.16
+  values: [ci, agent-sandbox, local]
+  rules:
+    - local never satisfies a required check at the merge or publish gate.
+    - agent-sandbox counts only when the sandbox is managed by the central pipeline.
+
+aiReviewMode:                   # Standard §7.9
+  values: [shadow, advisory, blocking]
+aiReviewDepth:
+  values: [quick, standard, deep]
+findingTag:                     # Standard §7.9
+  values: [Important, Nit, Pre-existing]
+
+# ---------------------------------------------------------------------------
+# Work and delivery (Standard §6, §12)
+# ---------------------------------------------------------------------------
+workItem:
+  definition: one accepted outcome, represented by a Task contract (Standard §6.4); may span several PRs or publishes; the unit of the North Star metric
+
+changeChannel:                  # Standard §12.6
+  values: [code, content, config, data]
+
+# ---------------------------------------------------------------------------
+# Security and data (Standard §10)
+# ---------------------------------------------------------------------------
+dataClass:                      # Standard §10.6 — ordered from least to most sensitive
+  values:
+    public:       published or publishable without harm
+    internal:     internal source code and engineering data; no customer or personal data
+    confidential: customer data, personal data, unreleased business information, security-relevant configuration
+    restricted:   secrets and credentials, regulated data (e.g. payment, health), special-category personal data
+  rules:
+    - Unknown data class = restricted.
+    - A task, trace or evidence bundle takes the highest class of any input it contains.
+    - restricted data is never sent to a model provider or tool; secrets are never placed in agent context.
+
+retentionClass:                 # Standard §10.7 — evidence, traces and agent outputs
+  values:
+    ephemeral:  { suggestedDuration: 30d, use: "local and debug traces, unattested runs" }
+    standard:   { suggestedDuration: 180d, use: "CI evidence and traces of merged or rejected work items" }
+    audit:      { suggestedDuration: 2y, use: "approvals, attested evidence of released versions, policy decisions, break-glass records; never shorter than the validity of a conformance claim relying on it" }
+    legal-hold: { suggestedDuration: until-released, use: "records under legal or incident hold" }
+  rules:
+    - Profiles and organisations MAY lengthen durations; regulations take precedence.
+    - Content is scanned for secrets and personal data before storage in any class (§10.7).
+
+taskState:                      # Standard §6.5
+  values: [REQUESTED, TRIAGED, NEEDS_CLARIFICATION, REJECTED, CONTEXT_READY, PLANNED,
+           AWAITING_PLAN_APPROVAL, EXECUTING, VERIFYING, REPAIRING, REVIEWING,
+           AWAITING_MERGE_APPROVAL, IN_MERGE_QUEUE, MERGED, RELEASING, PAUSED, OBSERVING,
+           ROLLED_BACK, REVERTED_ON_MAIN, INCIDENT_ANALYSIS, FORWARD_FIX, COMPLETED,
+           BLOCKED, ESCALATED, CANCELLED]
+  terminal: [COMPLETED, REJECTED, CANCELLED, FORWARD_FIX]
+  transitions:
+    REQUESTED: [TRIAGED]
+    TRIAGED: [CONTEXT_READY, REJECTED, NEEDS_CLARIFICATION]
+    NEEDS_CLARIFICATION: [TRIAGED]
+    CONTEXT_READY: [PLANNED, NEEDS_CLARIFICATION]
+    PLANNED: [AWAITING_PLAN_APPROVAL, EXECUTING, NEEDS_CLARIFICATION, REJECTED]
+    AWAITING_PLAN_APPROVAL: [EXECUTING, PLANNED, NEEDS_CLARIFICATION, REJECTED]
+    EXECUTING: [VERIFYING]
+    VERIFYING: [REVIEWING, REPAIRING]
+    REPAIRING: [VERIFYING]
+    REVIEWING: [AWAITING_MERGE_APPROVAL, REPAIRING]
+    AWAITING_MERGE_APPROVAL: [IN_MERGE_QUEUE, VERIFYING]
+    IN_MERGE_QUEUE: [MERGED, REPAIRING]
+    MERGED: [COMPLETED, RELEASING]
+    RELEASING: [PAUSED, ROLLED_BACK, OBSERVING]
+    PAUSED: [RELEASING, OBSERVING, ROLLED_BACK]
+    OBSERVING: [PAUSED, ROLLED_BACK, COMPLETED]
+    ROLLED_BACK: [REVERTED_ON_MAIN]
+    REVERTED_ON_MAIN: [INCIDENT_ANALYSIS]
+    INCIDENT_ANALYSIS: [FORWARD_FIX, COMPLETED]
+    BLOCKED: [previous-state]
+    ESCALATED: [previous-state, PLANNED, CANCELLED]
+  globalTransitions:
+    - any non-terminal state -> BLOCKED | ESCALATED
+    - any state before MERGED -> CANCELLED
+    - any state before MERGED -> PLANNED, on basis-change decision replan or reapprove
+  rules:
+    - Leaving ESCALATED needs a recorded human decision; loop budgets are never reset (an extension is recorded as such).
+    - A cancelled task recreated with the same goal links to the old task and inherits used budgets.
+    - Tier set at classification is provisional; the official tier is recomputed from the diff at every VERIFYING.
+    - NEEDS_CLARIFICATION is reached before EXECUTING only (failed requirement-review, or a knowledge conflict affecting correctness or risk, §4.7); from EXECUTING onward the task goes to BLOCKED.
+    - PLANNED or AWAITING_PLAN_APPROVAL -> REJECTED only on a failed design-review or plan-review (§6.12).
+
+channelState:                   # Standard §12.6 — reduced lifecycle for non-PR channels
+  values: [REQUESTED, VERIFYING, AWAITING_APPROVAL, PUBLISHED, OBSERVING, COMPLETED, ROLLED_BACK, BLOCKED]
+
+loopBudget:                     # Standard §6.4 — effective = min(policy, playbook, task)
+  counters:
+    verifyRepairIterations: { policyCeiling: 3 }
+    reviewRounds:           { policyCeiling: 3 }
+    mergeQueueAttempts:     { policyCeiling: 2 }
+  cost:
+    units: [usd, tokens]
+    rules:
+      - effective = min(policy, playbook, task); warn at 80% (suggested); at the limit the task stops at the nearest checkpoint and becomes ESCALATED.
+      - Raising the limit is a recorded decision (requester at tier Low; the task approver at Medium/High).
+
+acceptanceCriterion:            # Standard §6.4.1
+  oracleKind: [existing-test, new-independent-test, contract, runtime-check, human-judgment]
+  critical: { values: [true, false], confirmedAt: requirement-review }
+  rules:
+    - At tier Medium and High every criterion defaults to critical unless the approver marks otherwise with a reason.
+    - The criterion proving the reported defect is reproduced and fixed is always critical.
+assumptionStatus:
+  values: [confirmed, unconfirmed]
+
+taskSubState:                   # Standard §6.5
+  rules:
+    - Registered by a workflow spec; each sub-state belongs to exactly one parent taskState.
+    - Recorded as state + subState; transitions only inside the parent state.
+    - Policy, approvals, budgets and conformance reference parent states only.
+
+coreWorkflow:                   # Standard §6.7.2, Appendix D
+  values: [generic, bug-fix, feature-development, refactoring, dependency-change, api-contract-change,
+           database-migration, incident-response, release-deployment, investigation, codebase-gardening,
+           lookback, knowledge-reconciliation, sdk-release, ai-application-change, performance-hill-climb,
+           pr-babysit, session-pickup]
+  subStates:
+    bug-fix:             { CONTEXT_READY: [REPRODUCING, REPRODUCED], PLANNED: [ROOT_CAUSE_IDENTIFIED], EXECUTING: [FIXING] }
+    feature-development: { TRIAGED: [SPECIFYING], CONTEXT_READY: [IMPACT_ANALYZED], PLANNED: [DESIGNED], EXECUTING: [IMPLEMENTING_SLICE], VERIFYING: [ACCEPTANCE_VERIFYING] }
+    refactoring:         { PLANNED: [INVARIANTS_DEFINED, BASELINE_CAPTURED], EXECUTING: [REFACTORING_BATCH], VERIFYING: [EQUIVALENCE_VERIFIED] }
+    dependency-change:   { CONTEXT_READY: [CAPABILITY_SEARCHED], PLANNED: [CANDIDATE_EVALUATED], EXECUTING: [UPDATING], VERIFYING: [CONSUMERS_VERIFIED] }
+    api-contract-change: { CONTEXT_READY: [CONSUMERS_IDENTIFIED], PLANNED: [CONTRACT_PROPOSED, CONTRACT_APPROVED], EXECUTING: [PROVIDER_IMPLEMENTING], VERIFYING: [COMPATIBILITY_VERIFIED] }
+    database-migration:  { PLANNED: [MIGRATION_DESIGNED], VERIFYING: [MIGRATION_VALIDATED], RELEASING: [MIGRATING], OBSERVING: [POST_MIGRATION_VERIFICATION] }
+    incident-response:   { TRIAGED: [TRIAGING], EXECUTING: [MITIGATING], OBSERVING: [STABILIZING], INCIDENT_ANALYSIS: [ROOT_CAUSE_ANALYSIS] }
+    release-deployment:  { RELEASING: [CANDIDATE_VERIFIED, STAGED, CANARY, PROMOTING], OBSERVING: [HEALTH_CONFIRMED] }
+
+workflowStepKind:               # Standard §6.7.3
+  values: [mandatory, conditional, optional]
+  rules:
+    - Agents may add steps; mandatory steps, true-condition conditional steps, checkpoints and gates are never skipped.
+    - Conditions are evaluated by policy from declared inputs; an unevaluable condition runs the step.
+
+sideEffect:                     # Standard §6.14
+  values: [none, reversible, compensable, irreversible]
+  rules:
+    - compensable without a declared compensation is treated as irreversible.
+    - irreversible sets reversibility LOW (autonomy per the §9.5 matrix), always requires plan-review and release-readiness, runs only after an explicit human go at that step, and is never retried automatically.
+
+recoveryAction:                 # Standard §6.14
+  values: [retry, resume, rollback, compensate, escalate]
+  rules:
+    - Only ERROR and timeout are retried; FAIL enters the repair loop.
+    - Rollback undoes the action; compensation is a new forward action. They are never conflated.
+
+reviewCheckpoint:               # Standard §6.12
+  values: [requirement-review, specification-review, design-review, plan-review,
+           implementation-review, independent-verification, release-readiness]
+checkpointOutcome:
+  values: [passed, failed, not-applicable]
+  rules:
+    - Review, approval and verification are recorded separately; none substitutes for another.
+    - not-applicable is decided by policy with the evaluated condition recorded.
+
+handoffStatus:                  # Standard §6.13
+  values: [accepted, rejected]
+
+basisChangeDecision:            # Standard §6.5
+  values: [continue, replan, reapprove, stop]
+  rules:
+    - A basis change blocks the next gate until decided.
+    - Requester may decide continue only at tier Low with no acceptance criterion or scope touched.
+
+# ---------------------------------------------------------------------------
+# Knowledge (Standard §4.7, §5.8–§5.10)
+# ---------------------------------------------------------------------------
+knowledgeArtifactStatus:        # Standard §5.8 — distinct from task, rule, check and dependency lifecycles
+  values: [DRAFT, PROPOSED, ACTIVE, NEEDS_REVALIDATION, SUPERSEDED, DEPRECATED, ARCHIVED]
+  transitions:
+    DRAFT: [PROPOSED, ARCHIVED]
+    PROPOSED: [ACTIVE, DRAFT, ARCHIVED]
+    ACTIVE: [NEEDS_REVALIDATION, SUPERSEDED, DEPRECATED]
+    NEEDS_REVALIDATION: [ACTIVE, SUPERSEDED, DEPRECATED]
+    SUPERSEDED: [ARCHIVED]
+    DEPRECATED: [ARCHIVED]
+    ARCHIVED: []
+  rules:
+    - Only ACTIVE is a default basis; NEEDS_REVALIDATION only under §5.8 conditions.
+    - Automation may only move ACTIVE -> NEEDS_REVALIDATION.
+    - Validity is never inferred from last-modified time.
+
+knowledgeArtifactKind:          # Standard §5.8
+  values: [spec, design, adr, proposal, living-doc, runbook, agent-guide, skill, playbook]
+
+knowledgeAuthority:             # Standard §5.8
+  values: [intent, decision, implementation-description, procedure, guidance]
+  rules:
+    - intent and decision artifacts are never modified automatically to match an implementation.
+
+knowledgeRelation:              # Standard §4.3, §5.9
+  values: [describes, basedOn, generatedFrom, verifiedBy, implements, supersedes]
+
+reconciliationDecision:         # Standard §5.10
+  values: [keep, update, supersede, deprecate, review]
+
+reconciliationDecisionState:    # Standard §5.10
+  values: [proposed, decided]
+  rules:
+    - decidedBy policy is valid only for update on a generatedFrom artifact; every other decision is made by a human of the artifact's authority.
+
+knowledgeConflictResolution:    # Standard §4.7
+  values: [implementation-defect, intent-changed, artifact-corrected, superseded, no-conflict]
+
+conformanceLevel:               # Standard §20.4
+  values:
+    L1: Described
+    L2: Guarded
+    L3: Agent-ready
+    L4: Autonomy-eligible
+
+coreProfile:                    # Standard §20.7 — built-in profile owned by the Standard
+  id: aisf-core                 # versioned with the Standard, e.g. aisf-core@4.0.0
+  maxLevel: L2
+  rules:
+    - No extensions, no tightening; vocabulary as-is.
+    - Conformance scenarios are the pilot-mode end-to-end flow (§20.8 item 2).
+
+claimMode:                      # Standard §20.5, §20.8
+  values: [pilot, standard]
+  rules:
+    - A pilot claim is L1 plus the additionalRequirements of §20.8 item 3 and is never presented as L2.
+
+idConventions:                  # Standard §7.5, §8.1
+  rule: "<SCOPE>-<CATEGORY>-<NNN>   e.g. ARCH-001, FE-API-001"
+  check: "<domain>.<name>           e.g. integrity.skip-focus, knowledge.impact; declares implementsRules"
+  coreRequirement: "CORE-<AREA>-<NN> e.g. CORE-GOV-05"
+  coreRequirementAreas: [KNW, WRK, VER, REV, GOV, SEC, DEP, OPS, MET, PRF]
+  ruleCategories:
+    core: [CODE, TYPE, ARCH, API, SEC, DEP, TEST, UX, FLAG, PERM, STATE, PERF, OPS, AI, DOC]
+    registeredByProfiles:
+      frontend-1.1: [NEXT, CTX, DS, I18N, CFG]
